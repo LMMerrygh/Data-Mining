@@ -1,39 +1,546 @@
-# History files
-.Rhistory
-.Rapp.history
+# convenience function to quickly install packages that are needed if not installed and then load those packages
+packages_to_be_loaded=c("caret","rpart","rpart.plot","forecast","adabag","uplift","pls",
+                        "ggplot2","ggrepel","randomForest", "clusterSim", "cluster", "fpc", 
+                        "klaR", "clusMixType")
+lapply(packages_to_be_loaded,function(x){
+  if(x%in%installed.packages()[,1]==F){ install.packages(x)}
+  require(x,character.only = T)
+})
 
-# Session Data files
-.RData
+#Loaning Accidents.csv
+Accident.df <- read.csv("Accidents(AutoRecovered).csv", header=TRUE)
 
-# User-specific files
-.Ruserdata
+#Injury Crash Tree
 
-# Example code in package build process
-*-Ex.R
+#Correlation Matrix
+corrs <- cor(Accident.df[,c(1:21)])
+corrs.matrix <- as.matrix(corrs)
+corrplot(corrs.matrix, method="number")
+print(corrs.matrix)
 
-# Output files from R CMD build
-/*.tar.gz
+#Rearranging the columns so INJURY_CRASH is first
+#Removing Property_DMG due to very high correlation
+##Removing ADVERSE_WEATHER due to similiar correlation with ALCOHOL
+##Removing ROADWAY due to similiar correlation with TRAFFIC_CTRL
+##Removing INT_HWY and MANCOL due to similiar correlation with SPEED_LIMIT
+#Removing REGION due to similar correlation with Interstate and 
+#this level clouds the results by location vs total accidents
+accident <- Accident.df[,c(19,1:5,7,9:10,12:17)] 
 
-# Output files from R CMD check
-/*.Rcheck/
+#Summary Data
+summary(accident)
 
-# RStudio files
-.Rproj.user/
+dim(accident)
 
-# produced vignettes
-vignettes/*.html
-vignettes/*.pdf
+table(accident$INJURY_CRASH)
 
-# OAuth2 token, see https://github.com/hadley/httr/releases/tag/v0.3
-.httr-oauth
+#library(caret) 80-20 training criteria
+set.seed(123) #ensures we get the same train/valid set.
 
-# knitr and R markdown default cache directories
-*_cache/
-/cache/
+trainIndex <- createDataPartition(accident$INJURY_CRASH, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
 
-# Temporary files created by R markdown
-*.utf8.md
-*.knit.md
+accident_train <- accident[ trainIndex,]
+accident_valid  <- accident[-trainIndex,]
 
-# R Environment Variables
-.Renviron
+#library(rpart)
+
+#K Fold Crossvalidation to tune hyperparameter cp
+cv <- rpart(INJURY_CRASH ~ ., data=accident, method = "class", cp=0.00001, minsplit=5, xval=5)
+printcp(cv)
+
+#OUTPUT
+#Root node error: 20996/42183 = 0.49774
+
+#n= 42183 
+
+#CP nsplit rel error  xerror      xstd
+#1  7.0823e-02      0   1.00000 1.00000 0.0048910
+#2  5.2153e-02      1   0.92918 0.92918 0.0048773
+#3  7.7158e-03      2   0.87702 0.87702 0.0048515
+#4  1.7384e-03      4   0.86159 0.86197 0.0048415
+#5  1.3812e-03     10   0.84759 0.85573 0.0048371
+###6  8.0968e-04     11   0.84621 0.85397 0.0048358###
+#7  7.1442e-04     12   0.84540 0.85459 0.0048362
+
+#Info Gain using cp=.0048358
+set.seed(123)
+accident_rpart_info <- rpart(accident_train$INJURY_CRASH~., method="class", parms = list(split="information"), data=accident_train, cp=0.0048358)
+
+prp(accident_rpart_info, type=1, extra=1, split.font=1, varlen = -10)
+
+rpart.plot(accident_rpart_info, type=0, extra=101)
+
+#GINI using cp=.0048358
+set.seed(123)
+accident_rpart_gini <- rpart(accident_train$INJURY_CRASH~., method="class", parms = list(split="gini"), data=accident_train, cp=0.0048358)
+
+prp(accident_rpart_gini, type=1, extra=1, split.font=1, varlen = -10)
+
+rpart.plot(accident_rpart_gini, type=0, extra=101)
+
+#CP Table 
+#Info Gain Shows Best Tree Size is 4
+cptableI<-printcp(accident_rpart_info)
+cptableI
+plotcp(accident_rpart_info, minline=TRUE, col="red")
+#GINI Shows Best Tree Size is 4
+cptableG<-printcp(accident_rpart_gini)
+cptableG
+plotcp(accident_rpart_gini, minline=TRUE, col="red")
+
+#Elbow Method - Max tree size of 3
+set.seed(123)
+rpart_elbow <- rpart(accident_train$INJURY_CRASH~., method="class", parms = list(split="gini"), control=rpart.control(maxdepth=10), data=accident_train)
+
+rpart.plot(rpart_elbow, type=0, extra=101)
+
+#first we make predictions using the chosen decision tree model. 
+rpart_pred <- predict(accident_rpart_gini, accident_valid, type="class")
+#Had issues with confusion matrix
+#result.matrix <- confusionMatrix(rpart_pred, accident_valid, positive="YES")
+#print(result.matrix)
+
+#Table used to compute Prescision and Recall from wikipedia
+table(rpart_pred,accident_valid$INJURY_CRASH)
+
+#Calculating accuracy manually
+true.positive <- 3661
+true.negative <- 1126
+false.positive <- 3105
+false.negative <- 544
+total <- true.positive + true.negative + false.positive + false.negative
+
+accuracy.rate <- (true.positive + true.negative)/total
+sensitivity <- true.positive/(true.positive + false.negative) # sensitivity is also called Recall, true positive rate
+specificity <- true.negative/(true.negative + false.positive) # True Negative Rate
+precision <- true.positive/(true.positive + false.positive)
+
+print(accuracy.rate)
+print(sensitivity)
+print(specificity)
+print(precision)
+
+#Property Damage Tree
+
+#Rearranging the columns so PROPERTY_DMG is first
+#Removing INJURY_CRASH due to very high correlation
+#Removing INTERSTATE and ROADWAY due to similiar correlation with TRAFFIC_CTRL
+#Removing WORK_ZONE due to similiar correlation with INT_HWY
+#Removing WEEKDAY due to similiar correlation with MANCOL
+##Removing SURFACE_COND due to similiar correlation with ADVERSE_WEATHER
+#Removing REGION since this level clouds the results by location vs total accidents
+#and similiar correlatin with VEH_INVL
+accidentP <- Accident.df[,c(20,1:3,6:9,12:13,15:18)] 
+
+summary(accidentP)
+
+dim(accidentP)
+
+table(accidentP$INJURY_CRASH)
+
+#library(caret) 80-20 training criteria
+set.seed(123) #ensures we get the same train/valid set.
+
+trainIndex_P <- createDataPartition(accidentP$PROPERTY_DMG, p = .8, 
+                                  list = FALSE, 
+                                  times = 1)
+
+accidentP_train <- accidentP[ trainIndex,]
+accidentP_valid  <- accidentP[-trainIndex,]
+
+#library(rpart)
+
+#K Fold Crossvalidation to tune hyperparameter cp
+cvP <- rpart(PROPERTY_DMG ~ ., data=accidentP, method = "class", cp=0.00001, minsplit=5, xval=5)
+printcp(cvP)
+
+#OUTPUT
+
+#Root node error: 20721/42183 = 0.49122
+
+#n= 42183 
+
+#CP nsplit rel error  xerror      xstd
+#1  5.0890e-02      0   1.00000 1.00000 0.0049552
+#2  1.0376e-02      2   0.89822 0.89822 0.0049216
+#3  4.1745e-03      4   0.87747 0.87776 0.0049088
+#4  3.1369e-03      6   0.86912 0.87177 0.0049046
+#5  2.2682e-03      7   0.86598 0.86839 0.0049022
+#6  1.9545e-03      8   0.86371 0.86772 0.0049017
+#7  1.8339e-03     12   0.85276 0.86352 0.0048986
+#8  9.4107e-04     14   0.84909 0.85913 0.0048953
+#9  8.7834e-04     16   0.84721 0.85305 0.0048905
+#10 6.9173e-04     23   0.84098 0.85146 0.0048893
+###11 6.2738e-04     27   0.83770 0.85141 0.0048892###
+#12 5.7912e-04     30   0.83582 0.85150 0.0048893
+
+#Info Gain using cp=.0048892
+set.seed(123)
+accidentP_rpart_info <- rpart(accidentP_train$PROPERTY_DMG~., method="class", parms = list(split="information"), data=accidentP_train, cp=0.0048892)
+
+prp(accidentP_rpart_info, type=1, extra=1, split.font=1, varlen = -10)
+
+rpart.plot(accidentP_rpart_info, type=0, extra=101)
+
+#GINI using cp=.0048892
+set.seed(123)
+accidentP_rpart_gini <- rpart(accidentP_train$PROPERTY_DMG~., method="class", parms = list(split="gini"), data=accidentP_train, cp=0.0048892)
+
+prp(accidentP_rpart_gini, type=1, extra=1, split.font=1, varlen = -10)
+
+rpart.plot(accidentP_rpart_gini, type=0, extra=101)
+
+#CP Table 
+#Info Gain Shows Best Tree Size is 4
+cptable<-printcp(accidentP_rpart_info)
+cptable
+plotcp(accidentP_rpart_info, minline=TRUE, col="red")
+#GINI Shows Best Tree Size is 4
+cptable<-printcp(accidentP_rpart_gini)
+cptable
+plotcp(accidentP_rpart_gini, minline=TRUE, col="red")
+
+#Elbow Method - Max tree size of 3
+set.seed(123)
+rpart_elbow <- rpart(accidentP_train$PROPERTY_DMG~., method="class", parms = list(split="gini"), control=rpart.control(maxdepth=2), data=accidentP_train)
+
+rpart.plot(rpart_elbow, type=0, extra=101)
+
+#first we make predictions using the chosen decision tree model. 
+rpart_pred_P <- predict(accidentP_rpart_gini, accidentP_valid, type="class")
+#Had issues with confusion matrix
+#rpart_pred_P.df <- is.data.frame(rpart_pred_P)
+#result.matrix <- confusionMatrix(rpart_pred_P, as.factor(accidentP_valid), positive="1")
+#print(result.matrix)
+
+#Table used to compute Prescision and Recall from wikipedia
+table(rpart_pred_P,accidentP_valid$PROPERTY_DMG)
+
+#Calculating accuracy manually
+true.positive <- 1157
+true.negative <- 3606
+false.positive <- 513
+false.negative <- 3160
+total <- true.positive + true.negative + false.positive + false.negative
+
+accuracy.rate <- (true.positive + true.negative)/total
+sensitivity <- true.positive/(true.positive + false.negative) # sensitivity is also called Recall, true positive rate
+specificity <- true.negative/(true.negative + false.positive) # True Negative Rate
+precision <- true.positive/(true.positive + false.positive)
+
+print(accuracy.rate)
+print(sensitivity)
+print(specificity)
+print(precision)
+
+#Random Forest
+
+#Injury Crash using 3 variables per split and 500 trees
+RF.model <- randomForest(as.factor(INJURY_CRASH) ~.,data=accident_train, mtry=3, ntree=500,na.action = na.omit, importance=TRUE,) #default to try three predictors at a time and create 500 trees. 
+print(RF.model) 
+importance(RF.model) 
+varImpPlot(RF.model) 
+
+actual <- accident_valid$INJURY_CRASH 
+predicted <- predict(RF.model, accident_valid, type="response")
+actual.df <- is.data.frame(actual)
+predicted.df <- is.data.frame(predicted)
+CM <- confusionMatrix(predicted, as.factor(actual), positive="1") 
+print(CM)
+
+#Property Damage using 3 variables per split and 500 trees
+RF.model.P <- randomForest(as.factor(PROPERTY_DMG) ~.,data=accidentP_train, mtry=3, ntree=500,na.action = na.omit, importance=TRUE) #default to try three predictors at a time and create 500 trees. 
+print(RF.model.P) 
+importance(RF.model.P) 
+varImpPlot(RF.model.P) 
+
+actualP <- accidentP_valid$PROPERTY_DMG 
+predictedP <- predict(RF.model.P, accidentP_valid, type="response")
+actualP.df <- is.data.frame(actualP)
+predictedP.df <- is.data.frame(predictedP)
+CM_P <- confusionMatrix(predictedP, as.factor(actualP), positive="1") 
+print(CM_P)
+
+#Injury Crash using 4 variables per split and 1000 trees
+RF.model <- randomForest(as.factor(INJURY_CRASH) ~.,data=accident_train, mtry=4, ntree=1000,na.action = na.omit, importance=TRUE,) #default to try three predictors at a time and create 500 trees. 
+print(RF.model) 
+importance(RF.model) 
+varImpPlot(RF.model4_1000) 
+
+actual <- accident_valid$INJURY_CRASH 
+predicted <- predict(RF.model, accident_valid, type="response")
+actual.df <- is.data.frame(actual)
+predicted.df <- is.data.frame(predicted)
+CM <- confusionMatrix(predicted, as.factor(actual), positive="1") 
+print(CM)
+
+#Property Damage using 4 variables per split and 1000 trees
+RF.model.P <- randomForest(as.factor(PROPERTY_DMG) ~.,data=accidentP_train, mtry=4, ntree=1000,na.action = na.omit, importance=TRUE) #default to try three predictors at a time and create 500 trees. 
+print(RF.model.P) 
+importance(RF.model.P) 
+varImpPlot(RF.model.P4_1000) 
+
+actualP <- accidentP_valid$PROPERTY_DMG 
+predictedP <- predict(RF.model.P, accidentP_valid, type="response")
+actualP.df <- is.data.frame(actualP)
+predictedP.df <- is.data.frame(predictedP)
+CM_P <- confusionMatrix(predictedP, as.factor(actualP), positive="1") 
+print(CM_P)
+
+#CLUSTERING Property Damage accidents by region
+#Utilizing same column set used in previous models
+
+Accident.1 <- read.csv("Accident Region 1.csv", header=TRUE)
+
+accident_NE <- as.data.frame(Accident.1[,c(20,1:3,6:9,12:13,15:18)])
+
+Accident.2 <- read.csv("Accident Region 2.csv", header=TRUE)
+
+accident_MW <- as.data.frame(Accident.2[,c(20,1:3,6:9,12:13,15:18)])
+
+Accident.3 <- read.csv("Accident Region 3.csv", header=TRUE)
+
+accident_S <- as.data.frame(Accident.3[,c(20,1:3,6:9,12:13,15:18)])
+
+Accident.4 <- read.csv("Accident Region 4.csv", header=TRUE)
+
+accident_W <- as.data.frame(Accident.4[,c(20,1:3,6:9,12:13,15:18)])
+
+#NE region with k=5
+set.seed(123)
+NE_clusters_5 <- kmeans(accident_NE, centers=5)
+
+names(NE_clusters_5) 
+
+NE_clusters_5$size
+
+NE_clusters_5$cluster[1:100] #limit it to the first 100 observations otherwise it will print out all 30K!
+
+NE_clusters_5$centers 
+t(NE_clusters_5$centers) #transpose for ease of reading purpose
+
+#MW region with k=5
+set.seed(123)
+MW_clusters_5 <- kmeans(accident_MW, centers=5) 
+
+names(MW_clusters_5) 
+
+MW_clusters_5$size
+
+MW_clusters_5$cluster[1:100] #limit it to the first 100 observations otherwise it will print out all 30K!
+
+MW_clusters_5$centers 
+t(MW_clusters_5$centers) #transpose for ease of reading purpose
+
+#S region with k=5
+set.seed(123)
+S_clusters_5 <- kmeans(accident_S, centers=5) 
+
+names(S_clusters_5) 
+
+S_clusters_5$size
+
+S_clusters_5$cluster[1:100] #limit it to the first 100 observations otherwise it will print out all 30K!
+
+S_clusters_5$centers 
+t(S_clusters_5$centers) #transpose for ease of reading purpose
+
+#W region with k=5
+set.seed(123)
+W_clusters_5 <- kmeans(accident_W, centers=5) 
+
+names(W_clusters_5) 
+
+W_clusters_5$size
+
+W_clusters_5$cluster[1:100] #limit it to the first 100 observations otherwise it will print out all 30K!
+
+W_clusters_5$centers 
+t(W_clusters_5$centers) #transpose for ease of reading purpose
+
+#### Visualizing the Clusters
+#NE region with k=5
+clusplot(accident_NE, NE_clusters_5$cluster, main = "NE k=5",color=TRUE, shade=TRUE, labels=0, lines=0, cor=FALSE) #creates visualization using principal components 
+
+plotcluster(accident_NE, NE_clusters_5$cluster, main="NE k = 5") #creates a visualization using linear discriminants. Are there distinct groups?
+
+##plotcluster(accident_NE, NE_clusters_5$cluster, main="NE k=5", xlim=c(-20,5), ylim=c(-20,10))
+
+#NE region with k=4
+set.seed(123)
+NE_clusters_4 <- kmeans(accident_NE, centers=4)
+#plotcluster(accident_NE, NE_clusters_4$cluster, main="NE k=4")
+
+#NE region with k=3
+set.seed(123)
+NE_clusters_3 <- kmeans(accident_NE, centers=3)
+#plotcluster(accident_NE, NE_clusters_3$cluster, main="NE k=3")
+
+#MW region with k=5
+clusplot(accident_MW, MW_clusters_5$cluster, main = "MW k=5",color=TRUE, shade=TRUE, labels=0, lines=0, cor=FALSE) #creates visualization using principal components 
+
+plotcluster(accident_MW, MW_clusters_5$cluster, main="MW k = 5") #creates a visualization using linear discriminants. Are there distinct groups?
+
+##plotcluster(accident_MW, MW_clusters_5$cluster, main="MW k=5", xlim=c(-20,5), ylim=c(-20,10))
+
+#MW region with k=4
+set.seed(123)
+MW_clusters_4 <- kmeans(accident_MW, centers=4)
+#plotcluster(accident_MW, MW_clusters_4$cluster, main="MW k=4")
+
+#MW region with k=3
+set.seed(123)
+MW_clusters_3 <- kmeans(accident_MW, centers=3)
+#plotcluster(accident_MW, MW_clusters_3$cluster, main="MW k=3")
+
+#W region with k=5
+clusplot(accident_W, W_clusters_5$cluster, main = "W k=5",color=TRUE, shade=TRUE, labels=0, lines=0, cor=FALSE) #creates visualization using principal components 
+
+plotcluster(accident_W, W_clusters_5$cluster, main="W k = 5") #creates a visualization using linear discriminants. Are there distinct groups?
+
+##plotcluster(accident_W, W_clusters_5$cluster, main="W k=5", xlim=c(-20,5), ylim=c(-20,10))
+
+#W region with k=4
+set.seed(123)
+W_clusters_4 <- kmeans(accident_W, centers=4)
+#plotcluster(accident_W, W_clusters_4$cluster, main="W k=4")
+
+#W region with k=3
+set.seed(123)
+W_clusters_3 <- kmeans(accident_W, centers=3)
+#plotcluster(accident_W, W_clusters_3$cluster, main="W k=3")
+
+#S region with k=5
+clusplot(accident_S, S_clusters_5$cluster, main = "S k=5",color=TRUE, shade=TRUE, labels=0, lines=0, cor=FALSE) #creates visualization using principal components 
+
+plotcluster(accident_S, S_clusters_5$cluster, main="S k = 5") #creates a visualization using linear discriminants. Are there distinct groups?
+
+##plotcluster(accident_S, S_clusters_5$cluster, main="S k=5", xlim=c(-20,5), ylim=c(-20,10))
+
+#S region with k=4
+set.seed(123)
+S_clusters_4 <- kmeans(accident_S, centers=4)
+#plotcluster(accident_S, S_clusters_4$cluster, main="S k=4")
+
+#S region with k=3
+set.seed(123)
+S_clusters_3 <- kmeans(accident_S, centers=3)
+#plotcluster(accident_S, S_clusters_3$cluster, main="S k=3")
+
+#### Picking Among the K's
+##### A Digression on Sum of Squares 
+###### Within Sum of Squares (withinss)
+
+#We want our clusters to be "unique." In another word, we want the sum of squares within each cluster to be small because it means the cluster is cohesive. As we stated earlier, the default algorithm in kmeans is Hartigan & Wong, which minimizes the withinss. What are the withinss for each cluster? Look at Clusters 3, 5, and 1 in particular. Which cluster has the largest withinss?  
+NE_clusters_5$withinss
+NE_clusters_4$withinss
+NE_clusters_3$withinss
+MW_clusters_5$withinss
+MW_clusters_4$withinss
+MW_clusters_3$withinss
+W_clusters_5$withinss
+W_clusters_4$withinss
+W_clusters_3$withinss
+S_clusters_5$withinss
+S_clusters_4$withinss
+S_clusters_3$withinss
+
+###### Between Sum of Squares (betweenss)
+
+#We want each cluster to be different from its neighboring clusters. The betweenss is the most useful when we want to compare among multiple kmeans models.
+NE_clusters_5$betweenss
+NE_clusters_4$betweenss
+NE_clusters_3$betweenss
+MW_clusters_5$betweenss
+MW_clusters_4$betweenss
+MW_clusters_3$betweenss
+W_clusters_5$betweenss
+W_clusters_4$betweenss
+W_clusters_3$betweenss
+S_clusters_5$betweenss
+S_clusters_4$betweenss
+S_clusters_3$betweenss
+
+###### Total Sum of Squares (totss)
+
+#totss = betweenss + withinss
+NE_clusters_5$totss
+NE_clusters_4$totss
+NE_clusters_3$totss
+MW_clusters_5$totss
+MW_clusters_4$totss
+MW_clusters_3$totss
+W_clusters_5$totss
+W_clusters_4$totss
+W_clusters_3$totss
+S_clusters_5$totss
+S_clusters_4$totss
+S_clusters_3$totss
+
+##### Method 2: Examine the betweenss and withinss ratios!
+  
+  #We want the clusters to demonstrate both cohesion and separation. Cohesion is measured by minimizing the ratio of withinss/totalss. Separation is measured by maximizing the ratio of betweenss/totalss.
+
+#**Cluster Separation**
+
+NE_sep_3<- NE_clusters_3$betweenss/NE_clusters_3$totss
+NE_sep_4<- NE_clusters_4$betweenss/NE_clusters_4$totss
+NE_sep_5<- NE_clusters_5$betweenss/NE_clusters_5$totss
+MW_sep_3<- MW_clusters_3$betweenss/MW_clusters_3$totss
+MW_sep_4<- MW_clusters_4$betweenss/MW_clusters_4$totss
+MW_sep_5<- MW_clusters_5$betweenss/MW_clusters_5$totss
+W_sep_3<- W_clusters_3$betweenss/W_clusters_3$totss
+W_sep_4<- W_clusters_4$betweenss/W_clusters_4$totss
+W_sep_5<- W_clusters_5$betweenss/W_clusters_5$totss
+S_sep_3<- S_clusters_3$betweenss/S_clusters_3$totss
+S_sep_4<- S_clusters_4$betweenss/S_clusters_4$totss
+S_sep_5<- S_clusters_5$betweenss/S_clusters_5$totss
+
+betweenss.metric_NE <- c(NE_sep_3, NE_sep_4, NE_sep_5)
+betweenss.metric_MW <- c(MW_sep_3, MW_sep_4, MW_sep_5)
+betweenss.metric_W <- c(W_sep_3, W_sep_4, W_sep_5)
+betweenss.metric_S <- c(S_sep_3, S_sep_4, S_sep_5)
+print(betweenss.metric_NE) #Look for a ratio that is closer to 1.
+print(betweenss.metric_MW)
+print(betweenss.metric_W)
+print(betweenss.metric_S)
+#k=5 has the most separation for all 4 regions.
+
+
+#**Cluster Cohesion**
+
+NE_coh_3<- NE_clusters_3$tot.withinss/NE_clusters_3$totss
+NE_coh_4<- NE_clusters_4$tot.withinss/NE_clusters_4$totss
+NE_coh_5<- NE_clusters_5$tot.withinss/NE_clusters_5$totss
+MW_coh_3<- MW_clusters_3$tot.withinss/MW_clusters_3$totss
+MW_coh_4<- MW_clusters_4$tot.withinss/MW_clusters_4$totss
+MW_coh_5<- MW_clusters_5$tot.withinss/MW_clusters_5$totss
+W_coh_3<- W_clusters_3$tot.withinss/W_clusters_3$totss
+W_coh_4<- W_clusters_4$tot.withinss/W_clusters_4$totss
+W_coh_5<- W_clusters_5$tot.withinss/W_clusters_5$totss
+S_coh_3<- S_clusters_3$tot.withinss/S_clusters_3$totss
+S_coh_4<- S_clusters_4$tot.withinss/S_clusters_4$totss
+S_coh_5<- S_clusters_5$tot.withinss/S_clusters_5$totss
+
+totwithinss.metric_NE <- c(NE_coh_3, NE_coh_4, NE_coh_5)
+totwithinss.metric_MW <- c(MW_coh_3, MW_coh_4, MW_coh_5)
+totwithinss.metric_W <- c(W_coh_3, W_coh_4, W_coh_5)
+totwithinss.metric_S <- c(S_coh_3, S_coh_4, S_coh_5)
+print(totwithinss.metric_NE) #Looking for a ratio that is closer to 0. 
+print(totwithinss.metric_MW)
+print(totwithinss.metric_W)
+print(totwithinss.metric_S)
+
+#k=5 also has the most cluster cohesion for each region.
+
+###### The Elbow Plot 
+#WithinSS
+wss <- (nrow(accident_NE)-1)*sum(apply(accident_NE,2,var))
+for (i in 2:14) wss[i] <- sum(kmeans(accident_NE,
+                                     centers=i)$withinss)
+plot(1:14, wss, type="b", xlab="Number of Clusters",
+     ylab="Within Sum of Squares", main = "NE Number of Clusters (k) versus Within Cluster SS")
+
+
